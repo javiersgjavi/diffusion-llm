@@ -1,4 +1,9 @@
 # Byte-compiled / optimized / DLL files
+data/*
+logs/*
+lightning_logs/*
+nohup.out
+
 __pycache__/
 *.py[codz]
 *$py.class
