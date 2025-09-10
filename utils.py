@@ -25,6 +25,7 @@ class MaskGenerator:
     Class to generate masks for input tokens based on a given probability t.
     """
     mask_token_id: int = 103
+    special_token_ids: set[int] | None = None
 
     def _generate_mask(self, x: torch.Tensor, t: float) -> torch.Tensor:
         mask = torch.rand(x.shape, device=x.device) < t
@@ -37,6 +38,13 @@ class MaskGenerator:
         x = copy.deepcopy(x)
         x_tokens = x['input_ids']
         mask = self._generate_mask(x_tokens, t)
+
+        # Avoid masking special tokens (CLS, SEP, PAD, MASK, etc.)
+        if self.special_token_ids is not None and len(self.special_token_ids) > 0:
+            special_ids_tensor = torch.tensor(list(self.special_token_ids), device=x_tokens.device, dtype=x_tokens.dtype)
+            special_positions = torch.isin(x_tokens, special_ids_tensor)
+            mask = mask & ~special_positions
+
         x_tokens[mask] = self.mask_token_id
         x['input_ids'] = x_tokens
         return x, mask

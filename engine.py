@@ -20,7 +20,11 @@ class LLADAEngine(LightningModule):
         self.tokenizer: DistilBertTokenizer = DistilBertTokenizer.from_pretrained(model_name)
 
         # Helper classes
-        self.mask_generator = MaskGenerator()
+        self.special_token_ids = set(self.tokenizer.all_special_ids)
+        self.mask_generator = MaskGenerator(
+            mask_token_id=self.tokenizer.mask_token_id,
+            special_token_ids=self.special_token_ids,
+        )
         self.seed_controller = SeedController()
 
         # other attributes
@@ -112,17 +116,16 @@ class LLADAEngine(LightningModule):
             t_min=t_values_sampling[-1]
         )
 
-
         # Start from all masked tokens
         x = torch.randint(
             low=0,
             high=self.tokenizer.vocab_size,
-            size=(1, self.max_tokens),
+            size=(1, self.max_tokens//2),
             device=self.device
         )
 
         mask = torch.ones(
-            size=(1, self.max_tokens),
+            size=(1, self.max_tokens//2),
             device=self.device,
             dtype=torch.int64
         )
@@ -140,6 +143,11 @@ class LLADAEngine(LightningModule):
                     outputs: ModelOutput = self.forward(x, t, need_mask=False)
                     outputs.mask = mask.bool()
 
+                    # Avoid generating special tokens
+                    logits = self._ban_tokens_in_logits(outputs.logits, self.special_token_ids)
+                    tokens = logits.argmax(dim=-1)
+                    outputs.tokens = tokens
+
                     # If t is not the minimum t, we apply the remasking strategy
                     if not t == t_values_sampling[-1]:
                         x = remask_strategy(outputs, t)
@@ -156,9 +164,18 @@ class LLADAEngine(LightningModule):
         loss: torch.Tensor = 1/t[mask] * loss
         return loss.mean()
     
-    def decode_tokens(self, tokens: torch.Tensor, skip_special_tokens: bool = False) -> str:
+    def decode_tokens(self, tokens: torch.Tensor, skip_special_tokens: bool = True) -> str:
         """ Decode tokens to string """
         return self.tokenizer.decode(tokens[0], skip_special_tokens=skip_special_tokens)
+    
+    def _ban_tokens_in_logits(self, logits: torch.Tensor, banned_ids: set[int]) -> torch.Tensor:
+        """Ban tokens in logits putting -inf"""
+        if not banned_ids:
+            return logits
+        banned = torch.tensor(list(banned_ids), device=logits.device, dtype=torch.long)
+        logits[..., banned] = -float('inf')
+        return logits
+
     
     def log_loss(self, name: str, loss: torch.Tensor, outputs: ModelOutput) -> None:
         """ Log loss to TensorBoard and progress bar """
@@ -168,7 +185,8 @@ class LLADAEngine(LightningModule):
             prog_bar=True,
             on_epoch=True,
             logger=True,
-            batch_size=outputs.mask.shape[0]
+            batch_size=outputs.mask.shape[0],
+            sync_dist=True,
         )
 
     def tokenize_batch(self, batch: dict) -> dict:

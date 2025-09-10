@@ -7,21 +7,44 @@ from pytorch_lightning import seed_everything
 from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.loggers import TensorBoardLogger
+from pytorch_lightning.strategies import DDPStrategy
 
 from engine import LLADAEngine
-    
+
+def get_config_gpu():
+    res = {}
+
+    num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
+
+    if num_gpus == 0:
+        res['devices'] = None
+        res['strategy'] = None
+        res['precision'] = 32
+        
+    elif num_gpus == 1:
+        res['devices'] = 1
+        res['strategy'] = None
+        res['precision'] = 16
+
+    else:
+        res['devices'] = -1
+        res['strategy'] = DDPStrategy(find_unused_parameters=False)
+        res['precision'] = 16
+
+    return res
+
 def main():
 
     seed_everything(42)
 
     max_epochs = 3
-    batch_size = 8
-    desired_batch_size = 256
+    batch_size = 64
+    desired_batch_size = 64  # Effective batch size
 
     dataset = load_dataset("roneneldan/TinyStories")
 
     dataset_train = dataset['train']
-    dataset_validation = dataset['validation'].shuffle(seed=42).select(range(32))
+    dataset_validation = dataset['validation'].shuffle(seed=42).select(range(128))
 
     accumulate_grad_batches = desired_batch_size // batch_size
     
@@ -36,7 +59,7 @@ def main():
 
     # Compute total_steps: steps_per_epoch * epochs. Use desired global batch size.
     dataset_size = len(dataset_train)
-    steps_per_epoch = (dataset_size + desired_batch_size - 1) // desired_batch_size
+    steps_per_epoch = dataset_size // desired_batch_size
     total_steps = steps_per_epoch * max_epochs
     
     logging.info(f'Dataset size={dataset_size}')
@@ -45,17 +68,20 @@ def main():
 
     engine = LLADAEngine(total_steps=total_steps)
 
+    config_gpu = get_config_gpu()
+    logging.info(f'GPU config: {config_gpu}')
+    
     trainer = Trainer(
         max_epochs=max_epochs,
         logger=TensorBoardLogger(save_dir="logs"),
         callbacks=[ModelCheckpoint(monitor='val_loss', mode='min')],
         enable_progress_bar=True,
-        val_check_interval=0.01,
+        val_check_interval=0.2,
         accumulate_grad_batches=accumulate_grad_batches,
         gradient_clip_val=1.0,
         accelerator="auto",
-        devices=1 if torch.cuda.is_available() else None,
-        precision=16 if torch.cuda.is_available() else 32,
+        devices=config_gpu['devices'],
+        precision=config_gpu['precision'],
         )
     
     trainer.fit(engine, dataloader_train, dataloader_validation)
