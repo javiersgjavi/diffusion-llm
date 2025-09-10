@@ -22,11 +22,13 @@ def get_config_gpu():
         res['precision'] = 32
         
     elif num_gpus == 1:
+        torch.set_float32_matmul_precision('medium')
         res['devices'] = 1
         res['strategy'] = None
         res['precision'] = 16
 
     else:
+        torch.set_float32_matmul_precision('medium')
         res['devices'] = -1
         res['strategy'] = DDPStrategy(find_unused_parameters=False)
         res['precision'] = 16
