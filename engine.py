@@ -20,10 +20,8 @@ class LLADAEngine(LightningModule):
         self.tokenizer: DistilBertTokenizer = DistilBertTokenizer.from_pretrained(model_name)
 
         # Helper classes
-        self.special_token_ids = set(self.tokenizer.all_special_ids)
         self.mask_generator = MaskGenerator(
             mask_token_id=self.tokenizer.mask_token_id,
-            special_token_ids=self.special_token_ids,
         )
         self.seed_controller = SeedController()
 
@@ -143,11 +141,6 @@ class LLADAEngine(LightningModule):
                     outputs: ModelOutput = self.forward(x, t, need_mask=False)
                     outputs.mask = mask.bool()
 
-                    # Avoid generating special tokens
-                    logits = self._ban_tokens_in_logits(outputs.logits, self.special_token_ids)
-                    tokens = logits.argmax(dim=-1)
-                    outputs.tokens = tokens
-
                     # If t is not the minimum t, we apply the remasking strategy
                     if not t == t_values_sampling[-1]:
                         x = remask_strategy(outputs, t)
@@ -155,7 +148,7 @@ class LLADAEngine(LightningModule):
                     else:
                         x = outputs.tokens
 
-                    live.update(self.decode_tokens(x, skip_special_tokens=True))
+                    live.update(self.decode_tokens(x, skip_special_tokens=False))
 
     def loss_fn(self, outputs, labels, mask, t) -> torch.Tensor:
         """ Compute loss following the equation 5 of the paper """
