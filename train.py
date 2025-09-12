@@ -40,7 +40,7 @@ def main():
     seed_everything(42)
 
     max_epochs = 3
-    batch_size = 64
+    batch_size = 8
     desired_batch_size = 64  # Effective batch size
 
     dataset = load_dataset("roneneldan/TinyStories")
@@ -84,6 +84,7 @@ def main():
         accelerator="auto",
         devices=config_gpu['devices'],
         precision=config_gpu['precision'],
+        #overfit_batches=1
         )
     
     trainer.fit(engine, dataloader_train, dataloader_validation)
