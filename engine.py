@@ -9,7 +9,7 @@ from transformers import DistilBertTokenizer, DistilBertForMaskedLM
 class LLADAEngine(LightningModule):
     def __init__(
         self,
-        t_steps: int = 1024,
+        t_steps: int = 512,
         total_steps: int | None = None,
     ) -> None:
         super().__init__()
@@ -17,7 +17,7 @@ class LLADAEngine(LightningModule):
         # Model and Tokenizer
         model_name = "distilbert-base-uncased"
         self.model: DistilBertForMaskedLM = DistilBertForMaskedLM.from_pretrained(model_name)
-        self.tokenizer: DistilBertTokenizer = DistilBertTokenizer.from_pretrained(model_name)
+        self.tokenizer: DistilBertTokenizer = DistilBertTokenizer.from_pretrained(model_name, use_fast=True)
 
         # Helper classes
         self.mask_generator = MaskGenerator(
@@ -102,7 +102,7 @@ class LLADAEngine(LightningModule):
 
         self.log_loss('val_loss', cum_loss, outputs)
 
-    def generate(self, t_steps: int = 1024) -> None:
+    def generate(self, t_steps: int = 512) -> None:
 
         logging.info("Generating sample text...")
         # Prepare model and variables
@@ -118,12 +118,12 @@ class LLADAEngine(LightningModule):
         x = torch.randint(
             low=0,
             high=self.tokenizer.vocab_size,
-            size=(1, self.max_tokens//2),
+            size=(1, self.max_tokens),
             device=self.device
         )
 
         mask = torch.ones(
-            size=(1, self.max_tokens//2),
+            size=(1, self.max_tokens),
             device=self.device,
             dtype=torch.int64
         )
@@ -191,10 +191,11 @@ class LLADAEngine(LightningModule):
     # ----------- Pytorch Lightning specific methods -----------
 
     def configure_optimizers(self):
-        return build_optimizer_and_scheduler(
-            self.parameters(),
-            total_steps=self.total_steps,
-        )
+        return torch.optim.AdamW(self.parameters(), lr=4e-4, weight_decay=0.01, fused=True)
+        #return build_optimizer_and_scheduler(
+        #    self.parameters(),
+        #    total_steps=self.total_steps,
+        #)
     
     def on_train_start(self):
         self.seed_controller.set_train_seed()

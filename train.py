@@ -25,13 +25,13 @@ def get_config_gpu():
         torch.set_float32_matmul_precision('medium')
         res['devices'] = 1
         res['strategy'] = None
-        res['precision'] = 16
+        res['precision'] = "16-mixed"
 
     else:
         torch.set_float32_matmul_precision('medium')
         res['devices'] = -1
         res['strategy'] = DDPStrategy(find_unused_parameters=False)
-        res['precision'] = 16
+        res['precision'] = "16-mixed"
 
     return res
 
@@ -56,8 +56,8 @@ def main():
     logging.info(f'Desired batch size={desired_batch_size}')
     logging.info(f'Using accumulate grad batches={accumulate_grad_batches}')
 
-    dataloader_train = DataLoader(dataset_train, batch_size=batch_size, shuffle=True)
-    dataloader_validation = DataLoader(dataset_validation, batch_size=batch_size)
+    dataloader_train = DataLoader(dataset_train, batch_size=batch_size, shuffle=True, num_workers=4)
+    dataloader_validation = DataLoader(dataset_validation, batch_size=batch_size, num_workers=4)
 
     # Compute total_steps: steps_per_epoch * epochs. Use desired global batch size.
     dataset_size = len(dataset_train)
@@ -80,10 +80,11 @@ def main():
         enable_progress_bar=True,
         val_check_interval=0.2,
         accumulate_grad_batches=accumulate_grad_batches,
-        gradient_clip_val=1.0,
+        #gradient_clip_val=1.0,
         accelerator="auto",
         devices=config_gpu['devices'],
         precision=config_gpu['precision'],
+        log_every_n_steps=200,
         )
     
     trainer.fit(engine, dataloader_train, dataloader_validation)
