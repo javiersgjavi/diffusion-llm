@@ -17,7 +17,7 @@ class LLADAEngine(LightningModule):
         # Model and Tokenizer
         model_name = "distilbert-base-uncased"
         self.model: DistilBertForMaskedLM = DistilBertForMaskedLM.from_pretrained(model_name)
-        self.tokenizer: DistilBertTokenizer = DistilBertTokenizer.from_pretrained(model_name)
+        self.tokenizer: DistilBertTokenizer = DistilBertTokenizer.from_pretrained(model_name, use_fast=True)
 
         self.special_token_ids = {
             'pad_token_id': self.tokenizer.pad_token_id,
@@ -228,7 +228,7 @@ class LLADAEngine(LightningModule):
     # ----------- Pytorch Lightning specific methods -----------
 
     def configure_optimizers(self):
-        return torch.optim.AdamW(self.parameters(), lr=4e-4, weight_decay=0.01)
+        return torch.optim.AdamW(self.parameters(), lr=4e-4, weight_decay=0.01, fused=True)
         #return build_optimizer_and_scheduler(
         #    self.parameters(),
         #    total_steps=self.total_steps,
