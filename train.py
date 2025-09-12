@@ -40,7 +40,7 @@ def main():
     seed_everything(42)
 
     max_epochs = 3
-    batch_size = 64
+    batch_size = 8
     desired_batch_size = 64  # Effective batch size
 
     dataset = load_dataset("roneneldan/TinyStories")
@@ -80,7 +80,6 @@ def main():
         enable_progress_bar=True,
         val_check_interval=0.2,
         accumulate_grad_batches=accumulate_grad_batches,
-        #gradient_clip_val=1.0,
         accelerator="auto",
         devices=config_gpu['devices'],
         precision=config_gpu['precision'],

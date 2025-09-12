@@ -3,7 +3,7 @@ import torch
 from pytorch_lightning import LightningModule
 from rich.live import Live
 from rich.console import Console
-from utils import MaskGenerator, ModelOutput, SeedController, RandomRemaskStrategy, build_optimizer_and_scheduler
+from utils import MaskGenerator, ModelOutput, SeedController, RandomRemaskStrategy, BanSpecialTokens, GreedySampling, MultinomialSampling, build_optimizer_and_scheduler
 from transformers import DistilBertTokenizer, DistilBertForMaskedLM
     
 class LLADAEngine(LightningModule):
@@ -19,9 +19,15 @@ class LLADAEngine(LightningModule):
         self.model: DistilBertForMaskedLM = DistilBertForMaskedLM.from_pretrained(model_name)
         self.tokenizer: DistilBertTokenizer = DistilBertTokenizer.from_pretrained(model_name, use_fast=True)
 
+        self.special_token_ids = {
+            'pad_token_id': self.tokenizer.pad_token_id,
+            'cls_token_id': self.tokenizer.cls_token_id,
+            'sep_token_id': self.tokenizer.sep_token_id,
+            'mask_token_id': self.tokenizer.mask_token_id,
+        }
         # Helper classes
         self.mask_generator = MaskGenerator(
-            mask_token_id=self.tokenizer.mask_token_id,
+            mask_token_id=self.special_token_ids['mask_token_id'],
         )
         self.seed_controller = SeedController()
 
@@ -43,7 +49,7 @@ class LLADAEngine(LightningModule):
         
         if isinstance(x, torch.Tensor):
             x = {
-                'input_ids': x,
+                'input_ids': x.clone(),
                 'attention_mask': torch.ones_like(x)
             }
             
@@ -102,33 +108,57 @@ class LLADAEngine(LightningModule):
 
         self.log_loss('val_loss', cum_loss, outputs)
 
-    def generate(self, t_steps: int = 512) -> None:
+    def generate(
+            self,
+            t_steps: int = 1024,
+            n_tokens: int | None = None,
+            ban_special: bool = True,
+            sampling: str = "multinomial",
+            ) -> None:
 
         logging.info("Generating sample text...")
+
         # Prepare model and variables
         self.model.eval()
+
+        n_tokens = n_tokens if n_tokens is not None else self.max_tokens
         t_values_sampling = reversed(torch.linspace(0, 1, t_steps +1)[1:])
 
-        remask_strategy = RandomRemaskStrategy(
-            self.mask_generator.mask_token_id,
-            t_min=t_values_sampling[-1]
+        special_tokens_to_avoid = ['cls_token_id', 'mask_token_id']
+
+        cleaner = BanSpecialTokens(
+            banned_token_ids=[self.special_token_ids[t] for t in special_tokens_to_avoid]
         )
+
+        if sampling == "greedy":
+            sampling_strategy = GreedySampling()
+        elif sampling == "multinomial":
+            sampling_strategy = MultinomialSampling()
+        else:
+            raise ValueError(f"Unknown sampling strategy: {sampling}")
 
         # Start from all masked tokens
-        x = torch.randint(
-            low=0,
-            high=self.tokenizer.vocab_size,
-            size=(1, self.max_tokens),
-            device=self.device
-        )
-
         mask = torch.ones(
-            size=(1, self.max_tokens),
+            size=(1, n_tokens),
             device=self.device,
             dtype=torch.int64
         )
 
-        x = mask.clone() * self.mask_generator.mask_token_id
+        x = mask.clone() * self.special_token_ids['mask_token_id']
+
+        # Ensure the first and last tokens are CLS
+        x[:,0] = self.special_token_ids['cls_token_id']
+        mask[:,0] = 0
+
+        # Ensure the last token is SEP
+        x[:, -1] = self.special_token_ids['sep_token_id']
+        mask[:, -1] = 0
+
+        remask_strategy = RandomRemaskStrategy(
+            self.mask_generator.mask_token_id,
+            t_min=t_values_sampling[-1],
+            mask=mask,
+        )
 
         # Generate tokens step by step
         console = Console()
@@ -139,16 +169,23 @@ class LLADAEngine(LightningModule):
                     t = t.to(self.device)
 
                     outputs: ModelOutput = self.forward(x, t, need_mask=False)
-                    outputs.mask = mask.bool()
+                    
+                    if ban_special:
+                        outputs = cleaner(outputs)
+
+                    outputs = sampling_strategy(outputs)
 
                     # If t is not the minimum t, we apply the remasking strategy
                     if not t == t_values_sampling[-1]:
-                        x = remask_strategy(outputs, t)
+                        x = remask_strategy(x, outputs, t)
 
                     else:
                         x = outputs.tokens
 
                     live.update(self.decode_tokens(x, skip_special_tokens=False))
+
+                    if not remask_strategy.has_masked_tokens():
+                        break
 
     def loss_fn(self, outputs, labels, mask, t) -> torch.Tensor:
         """ Compute loss following the equation 5 of the paper """
