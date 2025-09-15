@@ -1,11 +1,17 @@
 import logging
+from typing import Any, Dict, List, Optional, Tuple, Union
+
 import torch
 from pytorch_lightning import LightningModule
-from rich.live import Live
 from rich.console import Console
-from utils import MaskGenerator, ModelOutput, SeedController, RandomRemaskStrategy, BanSpecialTokens, GreedySampling, MultinomialSampling, build_optimizer_and_scheduler
-from transformers import DistilBertTokenizer, DistilBertForMaskedLM
-    
+from rich.live import Live
+from transformers import DistilBertForMaskedLM, DistilBertTokenizer
+
+from utils import (BanSpecialTokens, GreedySampling, MaskGenerator,
+                   ModelOutput, MultinomialSampling, RandomRemaskStrategy,
+                   SeedController, build_optimizer_and_scheduler)
+
+
 class LLADAEngine(LightningModule):
     def __init__(
         self,
@@ -16,58 +22,62 @@ class LLADAEngine(LightningModule):
 
         # Model and Tokenizer
         model_name = "distilbert-base-uncased"
-        self.model: DistilBertForMaskedLM = DistilBertForMaskedLM.from_pretrained(model_name)
-        self.tokenizer: DistilBertTokenizer = DistilBertTokenizer.from_pretrained(model_name, use_fast=True)
+        self.model: DistilBertForMaskedLM = DistilBertForMaskedLM.from_pretrained(
+            model_name
+        )
+        self.tokenizer: DistilBertTokenizer = DistilBertTokenizer.from_pretrained(
+            model_name, use_fast=True
+        )
 
         self.special_token_ids = {
-            'pad_token_id': self.tokenizer.pad_token_id,
-            'cls_token_id': self.tokenizer.cls_token_id,
-            'sep_token_id': self.tokenizer.sep_token_id,
-            'mask_token_id': self.tokenizer.mask_token_id,
+            "pad_token_id": self.tokenizer.pad_token_id,
+            "cls_token_id": self.tokenizer.cls_token_id,
+            "sep_token_id": self.tokenizer.sep_token_id,
+            "mask_token_id": self.tokenizer.mask_token_id,
         }
         # Helper classes
         self.mask_generator = MaskGenerator(
-            mask_token_id=self.special_token_ids['mask_token_id'],
+            mask_token_id=self.special_token_ids["mask_token_id"],
         )
         self.seed_controller = SeedController()
 
         # other attributes
         self.max_tokens = self.tokenizer.model_max_length
-        self.criterion = torch.nn.CrossEntropyLoss(reduction='none')
-        self.t_values_sampling = reversed(torch.linspace(0, 1, t_steps +1)[1:])
-        self.total_steps = total_steps # For optimizer scheduler
+        self.criterion = torch.nn.CrossEntropyLoss(reduction="none")
+        self.t_values_sampling = reversed(torch.linspace(0, 1, t_steps + 1)[1:])
+        self.total_steps = total_steps  # For optimizer scheduler
 
     # ----------- Main methods for training, validation and generation -----------
 
     def forward(
-            self,
-            x: dict | torch.Tensor,
-            t: torch.Tensor,
-            need_mask: bool = True
-        ) -> ModelOutput:
-        """ Implement the forward pass of the model and the masking of the input tokens if needed """
-        
+        self,
+        x: Union[Dict[str, torch.Tensor], torch.Tensor],
+        t: torch.Tensor,
+        need_mask: bool = True,
+    ) -> ModelOutput:
+        """Implement the forward pass of the model and the masking of the input tokens if needed"""
+
         if isinstance(x, torch.Tensor):
-            x = {
-                'input_ids': x.clone(),
-                'attention_mask': torch.ones_like(x)
+            x: Dict[str, torch.Tensor] = {
+                "input_ids": x.clone(),
+                "attention_mask": torch.ones_like(x),
             }
-            
+
         if need_mask:
             x_masked, mask = self.mask_generator(x, t)
         else:
             x_masked, mask = x, None
 
-        outputs: torch.Tensor = self.model(**x_masked)['logits']
+        outputs = self.model(**x_masked)["logits"]
         tokens = outputs.argmax(dim=-1)
 
         return ModelOutput(logits=outputs, mask=mask, tokens=tokens)
-    
-    def training_step(self, batch, batch_idx) -> torch.Tensor:
+
+    def training_step(self, batch: Dict[str, Any], batch_idx: int) -> torch.Tensor:
 
         # Prepare inputs
-        x_tokenized: dict[str, torch.Tensor] = self.tokenize_batch(batch)
-        target: torch.Tensor = x_tokenized['input_ids'].clone()
+        x_tokenized = self.tokenize_batch(batch)
+        target = x_tokenized["input_ids"].clone()
         tensor_shape = target.shape
 
         # Sample t and expand to the shape of the input tokens
@@ -77,11 +87,11 @@ class LLADAEngine(LightningModule):
         # Forward pass
         outputs: ModelOutput = self.forward(x_tokenized, t)
         loss = self.loss_fn(outputs.logits, target, outputs.mask, t)
-        self.log_loss('train_loss', loss, outputs)
+        self.log_loss("train_loss", loss, outputs)
 
         return loss
-    
-    def validation_step(self, batch, batch_idx) -> None:
+
+    def validation_step(self, batch: Dict[str, Any], batch_idx: int) -> None:
         # Prepare inputs
         x_tokenized = self.tokenize_batch(batch)
 
@@ -90,14 +100,16 @@ class LLADAEngine(LightningModule):
         cum_loss = torch.tensor([0.0], device=self.device)
 
         for t in self.t_values_sampling:
-            
+
             # Sample t and expand to the shape of the input tokens
-            t = t.reshape(-1, 1).expand(x_tokenized['input_ids'].shape)
+            t = t.reshape(-1, 1).expand(x_tokenized["input_ids"].shape)
             t = t.to(self.device)
 
             # Forward pass
             outputs: ModelOutput = self.forward(x_tokenized, t)
-            loss = self.loss_fn(outputs.logits, x_tokenized['input_ids'], outputs.mask, t)
+            loss = self.loss_fn(
+                outputs.logits, x_tokenized["input_ids"], outputs.mask, t
+            )
 
             # Compute loss. Some times the mask can be all false, so the loss is nan
             if not torch.isnan(loss):
@@ -106,15 +118,15 @@ class LLADAEngine(LightningModule):
 
         loss /= num_losses
 
-        self.log_loss('val_loss', cum_loss, outputs)
+        self.log_loss("val_loss", cum_loss, outputs)
 
     def generate(
-            self,
-            t_steps: int = 1024,
-            n_tokens: int | None = None,
-            ban_special: bool = True,
-            sampling: str = "multinomial",
-            ) -> None:
+        self,
+        t_steps: int = 1024,
+        n_tokens: Optional[int] = None,
+        ban_special: bool = True,
+        sampling: str = "multinomial",
+    ) -> None:
 
         logging.info("Generating sample text...")
 
@@ -122,12 +134,14 @@ class LLADAEngine(LightningModule):
         self.model.eval()
 
         n_tokens = n_tokens if n_tokens is not None else self.max_tokens
-        t_values_sampling = reversed(torch.linspace(0, 1, t_steps +1)[1:])
+        t_values_sampling = reversed(torch.linspace(0, 1, t_steps + 1)[1:])
 
-        special_tokens_to_avoid = ['cls_token_id', 'mask_token_id']
+        special_tokens_to_avoid = ["cls_token_id", "mask_token_id"]
 
         cleaner = BanSpecialTokens(
-            banned_token_ids=[self.special_token_ids[t] for t in special_tokens_to_avoid]
+            banned_token_ids=[
+                self.special_token_ids[t] for t in special_tokens_to_avoid
+            ]
         )
 
         if sampling == "greedy":
@@ -138,20 +152,16 @@ class LLADAEngine(LightningModule):
             raise ValueError(f"Unknown sampling strategy: {sampling}")
 
         # Start from all masked tokens
-        mask = torch.ones(
-            size=(1, n_tokens),
-            device=self.device,
-            dtype=torch.int64
-        )
+        mask = torch.ones(size=(1, n_tokens), device=self.device, dtype=torch.int64)
 
-        x = mask.clone() * self.special_token_ids['mask_token_id']
+        x = mask.clone() * self.special_token_ids["mask_token_id"]
 
         # Ensure the first and last tokens are CLS
-        x[:,0] = self.special_token_ids['cls_token_id']
-        mask[:,0] = 0
+        x[:, 0] = self.special_token_ids["cls_token_id"]
+        mask[:, 0] = 0
 
         # Ensure the last token is SEP
-        x[:, -1] = self.special_token_ids['sep_token_id']
+        x[:, -1] = self.special_token_ids["sep_token_id"]
         mask[:, -1] = 0
 
         remask_strategy = RandomRemaskStrategy(
@@ -169,7 +179,7 @@ class LLADAEngine(LightningModule):
                     t = t.to(self.device)
 
                     outputs: ModelOutput = self.forward(x, t, need_mask=False)
-                    
+
                     if ban_special:
                         outputs = cleaner(outputs)
 
@@ -187,28 +197,37 @@ class LLADAEngine(LightningModule):
                     if not remask_strategy.has_masked_tokens():
                         break
 
-    def loss_fn(self, outputs, labels, mask, t) -> torch.Tensor:
-        """ Compute loss following the equation 5 of the paper """
+    def loss_fn(
+        self,
+        outputs: torch.Tensor,
+        labels: torch.Tensor,
+        mask: torch.Tensor,
+        t: torch.Tensor,
+    ) -> torch.Tensor:
+        """Compute loss following the equation 5 of the paper"""
         loss = self.criterion(outputs[mask], labels[mask])
         t = torch.max(t, torch.tensor(1e-5, device=self.device))
-        loss: torch.Tensor = 1/t[mask] * loss
+        loss = 1 / t[mask] * loss
         return loss.mean()
-    
-    def decode_tokens(self, tokens: torch.Tensor, skip_special_tokens: bool = True) -> str:
-        """ Decode tokens to string """
+
+    def decode_tokens(
+        self, tokens: torch.Tensor, skip_special_tokens: bool = True
+    ) -> str:
+        """Decode tokens to string"""
         return self.tokenizer.decode(tokens[0], skip_special_tokens=skip_special_tokens)
-    
-    def _ban_tokens_in_logits(self, logits: torch.Tensor, banned_ids: set[int]) -> torch.Tensor:
+
+    def _ban_tokens_in_logits(
+        self, logits: torch.Tensor, banned_ids: set[int]
+    ) -> torch.Tensor:
         """Ban tokens in logits putting -inf"""
         if not banned_ids:
             return logits
         banned = torch.tensor(list(banned_ids), device=logits.device, dtype=torch.long)
-        logits[..., banned] = -float('inf')
+        logits[..., banned] = -float("inf")
         return logits
 
-    
     def log_loss(self, name: str, loss: torch.Tensor, outputs: ModelOutput) -> None:
-        """ Log loss to TensorBoard and progress bar """
+        """Log loss to TensorBoard and progress bar"""
         self.log(
             name,
             loss.detach(),
@@ -219,25 +238,25 @@ class LLADAEngine(LightningModule):
             sync_dist=True,
         )
 
-    def tokenize_batch(self, batch: dict) -> dict:
-        x = batch['text']
-        x_tokenized = self.tokenizer(x, return_tensors="pt", padding=True, truncation=True)
+    def tokenize_batch(self, batch: Dict[str, Any]) -> Dict[str, torch.Tensor]:
+        x = batch["text"]
+        x_tokenized = self.tokenizer(
+            x, return_tensors="pt", padding=True, truncation=True
+        )
         x_tokenized = x_tokenized.to(self.device)
         return x_tokenized
-        
+
     # ----------- Pytorch Lightning specific methods -----------
 
-    def configure_optimizers(self):
-        return torch.optim.AdamW(self.parameters(), lr=4e-4, weight_decay=0.01, fused=True)
-        #return build_optimizer_and_scheduler(
-        #    self.parameters(),
-        #    total_steps=self.total_steps,
-        #)
-    
-    def on_train_start(self):
+    def configure_optimizers(self) -> Union[torch.optim.Optimizer, Dict[str, Any]]:
+        return build_optimizer_and_scheduler(
+            self.parameters(),
+            total_steps=self.total_steps,
+        )
+
+    def on_train_start(self) -> None:
         self.seed_controller.set_train_seed()
-    
-    def on_validation_start(self):
+
+    def on_validation_start(self) -> None:
         self.seed_controller.set_val_seed()
         self.generate()
-    
