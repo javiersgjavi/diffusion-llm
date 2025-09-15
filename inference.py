@@ -1,16 +1,27 @@
+import argparse
 import torch
 from engine import LLADAEngine
 
-def main():
+def main(args):
     torch.set_float32_matmul_precision('medium')
-    # Cargar el checkpoint pasando los argumentos requeridos
+    
     engine = LLADAEngine.load_from_checkpoint(
-        #"logs_2/lightning_logs/version_22/checkpoints/epoch=2-step=49682.ckpt",
-        #"logs/lightning_logs/version_8/checkpoints/epoch=2-step=85778.ckpt",
-        "logs_2/lightning_logs/version_25/checkpoints/epoch=2-step=36434.ckpt",
+        "weights/model.ckpt",
     )
 
-    engine.generate(t_steps=512, n_tokens=256)
+    engine.generate(
+        t_steps=args.t_steps,
+        n_tokens=args.n_tokens,
+        sampling=args.sampling
+    )
 
 if __name__ == "__main__":
-    main()
+
+    parser = argparse.ArgumentParser(description="Run inference with LLADAEngine")
+    parser.add_argument("--t_steps", type=int, default=512, help="Number of timesteps")
+    parser.add_argument("--n_tokens", type=int, default=30, help="Number of tokens to generate")
+    parser.add_argument("--sampling", type=str, default="greedy", help="Sampling method")
+    args = parser.parse_args()
+
+
+    main(args)
