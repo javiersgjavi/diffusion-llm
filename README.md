@@ -2,6 +2,8 @@
 
 A PyTorch Lightning implementation of **LLaDA** (Large Language Diffusion with mAsking) - a novel approach that challenges the autoregressive paradigm in large language models.
 
+![Generation Demo](generation.gif)
+
 ## Why this project?
 
 After working extensively with various text diffusion models that failed to deliver satisfactory results, I was excited to implement the LLaDA approach when the paper was released. This implementation represents my successful attempt to get text diffusion models working effectively.

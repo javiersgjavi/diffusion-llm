@@ -20,9 +20,11 @@ def main(args):
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Run inference with LLADAEngine")
-    parser.add_argument("--t_steps", type=int, default=512, help="Number of timesteps")
     parser.add_argument(
-        "--n_tokens", type=int, default=30, help="Number of tokens to generate"
+        "--t_steps", type=int, default=512, help="Number of timesteps"
+    )
+    parser.add_argument(
+        "--n_tokens", type=int, default=100, help="Number of tokens to generate"
     )
     parser.add_argument(
         "--sampling", type=str, default="greedy", help="Sampling method"
